@@ -1,3 +1,4 @@
+
 const SCORE_WORD = "I want wood";
 const COOLDOWN = 120000; // 2 minutes
 
@@ -220,4 +221,4 @@ async function sendMessage(token, chatId, text) {
       await response.text()
     );
   }
-          }
+}
