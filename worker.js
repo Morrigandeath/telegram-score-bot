@@ -6,6 +6,13 @@ export default {
     const url = new URL(request.url);
 
     try {
+      // Check D1 binding
+      if (!env.DB) {
+        return new Response("ERROR: D1 binding DB is missing", {
+          status: 500
+        });
+      }
+
       // Health check
       if (request.method === "GET" && url.pathname === "/") {
         return new Response("Bot is running!");
@@ -174,12 +181,15 @@ export default {
     } catch (error) {
       console.error("Webhook error:", error);
 
-      return new Response("ERROR: " + String(error), {
-        status: 500,
-        headers: {
-          "Content-Type": "text/plain"
+      return new Response(
+        "ERROR: " + String(error),
+        {
+          status: 500,
+          headers: {
+            "Content-Type": "text/plain"
+          }
         }
-      });
+      );
     }
   }
 };
@@ -199,5 +209,15 @@ async function sendMessage(token, chatId, text) {
     }
   );
 
-  console.log("Telegram response status:", response.status);
+  console.log(
+    "Telegram response status:",
+    response.status
+  );
+
+  if (!response.ok) {
+    console.error(
+      "Telegram sendMessage failed:",
+      await response.text()
+    );
+  }
           }
