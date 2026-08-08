@@ -1,6 +1,6 @@
 const SCORE_WORD = "کیر میخوام";
 const COOLDOWN = 120000; // 2 minutes
-
+ 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
