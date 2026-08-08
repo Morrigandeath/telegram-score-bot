@@ -1,10 +1,4 @@
-name = "telegram-score-bot"
-main = "worker.js"
-compatibility_date = "2026-08-08"
-
-[[d1_databases]]
-binding = "DB"
-database_name = "telegram-score-db"
-database_id = "0ad8e2e7-7250-462c-9f2a-a9b50172ce43"
-[observability]
-enabled = true
+telegram-score-bot/
+├── bot.py
+├── requirements.txt
+└── scores.db
