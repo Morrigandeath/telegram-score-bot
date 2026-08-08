@@ -4,6 +4,8 @@ const BOMB_WORD = "بمب کیر";
 const MY_SCORE_WORD = "چقدر کیر دارم";
 const LEADERBOARD_WORD = "رتبه بندی خواهان کیر";
 
+const ADMIN_ID = "6364019242";
+
 const COOLDOWN = 120000; // 2 minutes
 
 export default {
@@ -11,12 +13,18 @@ export default {
     const url = new URL(request.url);
 
     try {
-      // Health check
+      // =========================
+      // HEALTH CHECK
+      // =========================
+
       if (request.method === "GET" && url.pathname === "/") {
         return new Response("Bot is running!");
       }
 
-      // Set Telegram webhook
+      // =========================
+      // SET WEBHOOK
+      // =========================
+
       if (request.method === "GET" && url.pathname === "/setup") {
         const webhookUrl = `${url.origin}/telegram`;
 
@@ -40,7 +48,10 @@ export default {
         });
       }
 
-      // Telegram webhook
+      // =========================
+      // TELEGRAM WEBHOOK
+      // =========================
+
       if (request.method === "POST" && url.pathname === "/telegram") {
         const update = await request.json();
 
@@ -60,7 +71,34 @@ export default {
         const userId = String(user.id);
         const name = user.first_name || "بازیکن";
 
-        // /start
+        // =========================
+        // CREATE SETTINGS TABLE
+        // =========================
+
+        await env.DB.prepare(`
+          CREATE TABLE IF NOT EXISTS user_settings (
+            user_id TEXT PRIMARY KEY,
+            vip INTEGER NOT NULL DEFAULT 0,
+            half INTEGER NOT NULL DEFAULT 0,
+            muted_until INTEGER NOT NULL DEFAULT 0
+          )
+        `).run();
+
+        // =========================
+        // CREATE BOMB TABLE
+        // =========================
+
+        await env.DB.prepare(`
+          CREATE TABLE IF NOT EXISTS bomb_claims (
+            user_id TEXT PRIMARY KEY,
+            claimed_at INTEGER NOT NULL
+          )
+        `).run();
+
+        // =========================
+        // START
+        // =========================
+
         if (text === "/start") {
           await sendMessage(
             env.BOT_TOKEN,
@@ -76,13 +114,284 @@ export default {
           return new Response("OK");
         }
 
-        // Make sure bomb table exists
-        await env.DB.prepare(`
-          CREATE TABLE IF NOT EXISTS bomb_claims (
-            user_id TEXT PRIMARY KEY,
-            claimed_at INTEGER NOT NULL
-          )
-        `).run();
+        // =========================
+        // ADMIN CHECK
+        // =========================
+
+        const isAdmin = userId === ADMIN_ID;
+
+        // =========================
+        // ADMIN HELP
+        // =========================
+
+        if (text === "/admin") {
+          if (!isAdmin) {
+            return new Response("OK");
+          }
+
+          await sendMessage(
+            env.BOT_TOKEN,
+            chatId,
+            `👑 کامندهای ادمین:\n\n` +
+            `/vip — روی پیام شخص ریپلای کن\n` +
+            `/unvip — حذف VIP\n` +
+            `/mute 60 — محروم کردن از امتیازگیری برای ۶۰ دقیقه\n` +
+            `/unmute — فعال کردن دوباره\n` +
+            `/half — نصف شدن امتیازها\n` +
+            `/unhalf — حذف حالت نصف\n` +
+            `/status — نمایش وضعیت شخص`
+          );
+
+          return new Response("OK");
+        }
+
+        // =========================
+        // REPLIED USER
+        // =========================
+
+        const repliedUser =
+          message.reply_to_message &&
+          message.reply_to_message.from;
+
+        // =========================
+        // ADMIN COMMANDS
+        // =========================
+
+        if (
+          text === "/vip" ||
+          text === "/unvip" ||
+          text === "/unmute" ||
+          text === "/half" ||
+          text === "/unhalf" ||
+          text === "/status" ||
+          text.startsWith("/mute")
+        ) {
+          if (!isAdmin) {
+            return new Response("OK");
+          }
+
+          if (!repliedUser) {
+            await sendMessage(
+              env.BOT_TOKEN,
+              chatId,
+              "⚠️ باید روی پیام شخص ریپلای کنی."
+            );
+
+            return new Response("OK");
+          }
+
+          const targetId = String(repliedUser.id);
+          const targetName =
+            repliedUser.first_name || "بازیکن";
+
+          // Create settings row if needed
+          await env.DB.prepare(`
+            INSERT OR IGNORE INTO user_settings
+            (user_id, vip, half, muted_until)
+            VALUES (?, 0, 0, 0)
+          `)
+            .bind(targetId)
+            .run();
+
+          // =========================
+          // VIP
+          // =========================
+
+          if (text === "/vip") {
+            await env.DB.prepare(`
+              UPDATE user_settings
+              SET vip = 1
+              WHERE user_id = ?
+            `)
+              .bind(targetId)
+              .run();
+
+            await sendMessage(
+              env.BOT_TOKEN,
+              chatId,
+              `👑 ${targetName} الان VIP شد!\n\n` +
+              `امتیازها ×۲\n` +
+              `زمان انتظار ÷۲`
+            );
+
+            return new Response("OK");
+          }
+
+          // =========================
+          // UNVIP
+          // =========================
+
+          if (text === "/unvip") {
+            await env.DB.prepare(`
+              UPDATE user_settings
+              SET vip = 0
+              WHERE user_id = ?
+            `)
+              .bind(targetId)
+              .run();
+
+            await sendMessage(
+              env.BOT_TOKEN,
+              chatId,
+              `❌ VIP برای ${targetName} حذف شد.`
+            );
+
+            return new Response("OK");
+          }
+
+          // =========================
+          // MUTE
+          // =========================
+
+          if (text.startsWith("/mute")) {
+            const parts = text.split(/\s+/);
+            const minutes = Number(parts[1]);
+
+            if (!Number.isFinite(minutes) || minutes <= 0) {
+              await sendMessage(
+                env.BOT_TOKEN,
+                chatId,
+                "⚠️ مثال درست:\n/mute 60"
+              );
+
+              return new Response("OK");
+            }
+
+            const mutedUntil =
+              Date.now() + minutes * 60 * 1000;
+
+            await env.DB.prepare(`
+              UPDATE user_settings
+              SET muted_until = ?
+              WHERE user_id = ?
+            `)
+              .bind(mutedUntil, targetId)
+              .run();
+
+            await sendMessage(
+              env.BOT_TOKEN,
+              chatId,
+              `🔇 ${targetName} برای ${minutes} دقیقه از امتیازگیری محروم شد.`
+            );
+
+            return new Response("OK");
+          }
+
+          // =========================
+          // UNMUTE
+          // =========================
+
+          if (text === "/unmute") {
+            await env.DB.prepare(`
+              UPDATE user_settings
+              SET muted_until = 0
+              WHERE user_id = ?
+            `)
+              .bind(targetId)
+              .run();
+
+            await sendMessage(
+              env.BOT_TOKEN,
+              chatId,
+              `🔊 امتیازگیری ${targetName} دوباره فعال شد.`
+            );
+
+            return new Response("OK");
+          }
+
+          // =========================
+          // HALF
+          // =========================
+
+          if (text === "/half") {
+            await env.DB.prepare(`
+              UPDATE user_settings
+              SET half = 1
+              WHERE user_id = ?
+            `)
+              .bind(targetId)
+              .run();
+
+            await sendMessage(
+              env.BOT_TOKEN,
+              chatId,
+              `⬇️ از این به بعد امتیازهای ${targetName} نصف حساب می‌شود.`
+            );
+
+            return new Response("OK");
+          }
+
+          // =========================
+          // UNHALF
+          // =========================
+
+          if (text === "/unhalf") {
+            await env.DB.prepare(`
+              UPDATE user_settings
+              SET half = 0
+              WHERE user_id = ?
+            `)
+              .bind(targetId)
+              .run();
+
+            await sendMessage(
+              env.BOT_TOKEN,
+              chatId,
+              `⬆️ حالت نصف برای ${targetName} حذف شد.`
+            );
+
+            return new Response("OK");
+          }
+
+          // =========================
+          // STATUS
+          // =========================
+
+          if (text === "/status") {
+            const settings = await env.DB.prepare(`
+              SELECT vip, half, muted_until
+              FROM user_settings
+              WHERE user_id = ?
+            `)
+              .bind(targetId)
+              .first();
+
+            const now = Date.now();
+
+            let status =
+              `👤 وضعیت ${targetName}\n\n`;
+
+            status += settings && settings.vip
+              ? "👑 VIP: فعال\n"
+              : "👑 VIP: خاموش\n";
+
+            status += settings && settings.half
+              ? "⬇️ نصف امتیاز: فعال\n"
+              : "⬆️ نصف امتیاز: خاموش\n";
+
+            if (
+              settings &&
+              settings.muted_until > now
+            ) {
+              const remaining = Math.ceil(
+                (settings.muted_until - now) / 60000
+              );
+
+              status +=
+                `🔇 Mute: ${remaining} دقیقه باقی مانده\n`;
+            } else {
+              status += "🔊 Mute: خاموش\n";
+            }
+
+            await sendMessage(
+              env.BOT_TOKEN,
+              chatId,
+              status
+            );
+
+            return new Response("OK");
+          }
+        }
 
         // =========================
         // MY SCORE
@@ -134,7 +443,8 @@ export default {
             return new Response("OK");
           }
 
-          let leaderboard = "🏆 رتبه بندی خواهان کیر\n\n";
+          let leaderboard =
+            "🏆 رتبه بندی خواهان کیر\n\n";
 
           result.results.forEach((player, index) => {
             leaderboard +=
@@ -155,13 +465,14 @@ export default {
         // =========================
 
         if (text === BOMB_WORD) {
-          const alreadyClaimed = await env.DB.prepare(`
-            SELECT user_id
-            FROM bomb_claims
-            WHERE user_id = ?
-          `)
-            .bind(userId)
-            .first();
+          const alreadyClaimed =
+            await env.DB.prepare(`
+              SELECT user_id
+              FROM bomb_claims
+              WHERE user_id = ?
+            `)
+              .bind(userId)
+              .first();
 
           if (alreadyClaimed) {
             await sendMessage(
@@ -176,7 +487,6 @@ export default {
 
           const now = Date.now();
 
-          // Create player if needed
           const player = await env.DB.prepare(`
             SELECT user_id, name, score
             FROM scores
@@ -205,7 +515,6 @@ export default {
               .run();
           }
 
-          // Mark bomb as used
           await env.DB.prepare(`
             INSERT INTO bomb_claims
             (user_id, claimed_at)
@@ -214,13 +523,14 @@ export default {
             .bind(userId, now)
             .run();
 
-          const updatedPlayer = await env.DB.prepare(`
-            SELECT score
-            FROM scores
-            WHERE user_id = ?
-          `)
-            .bind(userId)
-            .first();
+          const updatedPlayer =
+            await env.DB.prepare(`
+              SELECT score
+              FROM scores
+              WHERE user_id = ?
+            `)
+              .bind(userId)
+              .first();
 
           await sendMessage(
             env.BOT_TOKEN,
@@ -248,7 +558,62 @@ export default {
 
         const now = Date.now();
 
-        // Get player
+        // =========================
+        // USER SETTINGS
+        // =========================
+
+        const settings = await env.DB.prepare(`
+          SELECT vip, half, muted_until
+          FROM user_settings
+          WHERE user_id = ?
+        `)
+          .bind(userId)
+          .first();
+
+        const isVip =
+          settings && settings.vip === 1;
+
+        const isHalf =
+          settings && settings.half === 1;
+
+        const mutedUntil =
+          settings ? settings.muted_until : 0;
+
+        // =========================
+        // MUTE CHECK
+        // =========================
+
+        if (mutedUntil > now) {
+          const remaining = Math.ceil(
+            (mutedUntil - now) / 60000
+          );
+
+          await sendMessage(
+            env.BOT_TOKEN,
+            chatId,
+            `🔇 ${name}، فعلاً امکان گرفتن امتیاز نداری.\n` +
+            `${remaining} دقیقه باقی مانده.`
+          );
+
+          return new Response("OK");
+        }
+
+        // =========================
+        // VIP / HALF POINTS
+        // =========================
+
+        if (isVip) {
+          points *= 2;
+        }
+
+        if (isHalf) {
+          points /= 2;
+        }
+
+        // =========================
+        // PLAYER
+        // =========================
+
         const player = await env.DB.prepare(`
           SELECT user_id, name, score, last_score_at
           FROM scores
@@ -261,11 +626,19 @@ export default {
         // COOLDOWN
         // =========================
 
-        if (player) {
-          const elapsed = now - player.last_score_at;
+        let effectiveCooldown = COOLDOWN;
 
-          if (elapsed < COOLDOWN) {
-            const remaining = COOLDOWN - elapsed;
+        if (isVip) {
+          effectiveCooldown = COOLDOWN / 2;
+        }
+
+        if (player) {
+          const elapsed =
+            now - player.last_score_at;
+
+          if (elapsed < effectiveCooldown) {
+            const remaining =
+              effectiveCooldown - elapsed;
 
             const minutes = Math.floor(
               remaining / 60000
@@ -327,7 +700,8 @@ export default {
         // EXISTING PLAYER
         // =========================
 
-        const newScore = player.score + points;
+        const newScore =
+          player.score + points;
 
         await env.DB.prepare(`
           UPDATE scores
@@ -368,6 +742,10 @@ export default {
 };
 
 
+// =========================
+// SEND MESSAGE
+// =========================
+
 async function sendMessage(token, chatId, text) {
   const response = await fetch(
     `https://api.telegram.org/bot${token}/sendMessage`,
@@ -389,4 +767,4 @@ async function sendMessage(token, chatId, text) {
       await response.text()
     );
   }
-          }
+              }
