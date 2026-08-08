@@ -1,4 +1,6 @@
-telegram-score-bot/
-├── bot.py
-├── requirements.txt
-└── scores.db
+name = "telegram-score-bot"
+main = "worker.js"
+compatibility_date = "2026-08-08"
+
+[observability]
+enabled = true
