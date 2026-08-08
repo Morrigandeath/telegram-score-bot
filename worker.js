@@ -18,7 +18,7 @@ export default {
         ).all();
 
         if (result.results.length > 0) {
-          return new Response("Database OK - scores table exists");
+          return new Response("DB_OK");
         }
 
         return new Response("Database connected, but scores table is missing", {
@@ -171,11 +171,17 @@ export default {
       return new Response("Not found", { status: 404 });
 
     } catch (error) {
-      // Never return 500 to Telegram.
-      // Telegram requires a successful webhook response.
       console.error("Webhook error:", error);
 
-      return new Response("OK");
+      return new Response(
+        "ERROR: " + String(error),
+        {
+          status: 500,
+          headers: {
+            "Content-Type": "text/plain"
+          }
+        }
+      );
     }
   }
 };
