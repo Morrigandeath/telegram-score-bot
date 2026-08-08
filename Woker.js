@@ -1,5 +1,5 @@
-const SCORE_WORD = "کیر";
-const SCORE_WORD_5 = "کیر گنده";
+const SCORE_WORD = "کیر میخوام";
+const SCORE_WORD_5 = "کیر گنده میخوام";
 const BOMB_WORD = "بمب کیر";
 const MY_SCORE_WORD = "چقدر کیر دارم";
 const LEADERBOARD_WORD = "رتبه بندی خواهان کیر";
@@ -7,6 +7,7 @@ const LEADERBOARD_WORD = "رتبه بندی خواهان کیر";
 const ADMIN_ID = "6364019242";
 
 const COOLDOWN = 120000; // 2 minutes
+const BOMB_COOLDOWN = 24 * 60 * 60 * 1000; // 24 hours
 
 export default {
   async fetch(request, env) {
@@ -104,9 +105,8 @@ export default {
             env.BOT_TOKEN,
             chatId,
             `👋 خوش آمدی ${name}!\n\n` +
-            `کیر → ۱ امتیاز\n` +
-            `کیر گنده → ۵ امتیاز\n` +
-            `بمب کیر → ۱۰۰ امتیاز (فقط یک‌بار)\n\n` +
+            `کیر میخوام → ۱ امتیاز\n` +
+            `کیر گنده میخوام → ۵ امتیاز\n\n` +
             `🏆 رتبه بندی خواهان کیر\n` +
             `📊 چقدر کیر دارم`
           );
@@ -135,7 +135,7 @@ export default {
             `👑 کامندهای ادمین:\n\n` +
             `/vip — روی پیام شخص ریپلای کن\n` +
             `/unvip — حذف VIP\n` +
-            `/mute 60 — محروم کردن از امتیازگیری برای ۶۰ دقیقه\n` +
+            `/mute — میوت کردن تا زمان /unmute\n` +
             `/unmute — فعال کردن دوباره\n` +
             `/half — نصف شدن امتیازها\n` +
             `/unhalf — حذف حالت نصف\n` +
@@ -160,11 +160,11 @@ export default {
         if (
           text === "/vip" ||
           text === "/unvip" ||
+          text === "/mute" ||
           text === "/unmute" ||
           text === "/half" ||
           text === "/unhalf" ||
-          text === "/status" ||
-          text.startsWith("/mute")
+          text === "/status"
         ) {
           if (!isAdmin) {
             return new Response("OK");
@@ -181,10 +181,14 @@ export default {
           }
 
           const targetId = String(repliedUser.id);
+
           const targetName =
             repliedUser.first_name || "بازیکن";
 
-          // Create settings row if needed
+          // =========================
+          // CREATE SETTINGS ROW
+          // =========================
+
           await env.DB.prepare(`
             INSERT OR IGNORE INTO user_settings
             (user_id, vip, half, muted_until)
@@ -243,35 +247,20 @@ export default {
           // MUTE
           // =========================
 
-          if (text.startsWith("/mute")) {
-            const parts = text.split(/\s+/);
-            const minutes = Number(parts[1]);
-
-            if (!Number.isFinite(minutes) || minutes <= 0) {
-              await sendMessage(
-                env.BOT_TOKEN,
-                chatId,
-                "⚠️ مثال درست:\n/mute 60"
-              );
-
-              return new Response("OK");
-            }
-
-            const mutedUntil =
-              Date.now() + minutes * 60 * 1000;
-
+          if (text === "/mute") {
             await env.DB.prepare(`
               UPDATE user_settings
-              SET muted_until = ?
+              SET muted_until = -1
               WHERE user_id = ?
             `)
-              .bind(mutedUntil, targetId)
+              .bind(targetId)
               .run();
 
             await sendMessage(
               env.BOT_TOKEN,
               chatId,
-              `🔇 ${targetName} برای ${minutes} دقیقه از امتیازگیری محروم شد.`
+              `🔇 ${targetName} میوت شد.\n` +
+              `تا وقتی ادمین /unmute نکند، امکان امتیازگیری ندارد.`
             );
 
             return new Response("OK");
@@ -356,8 +345,6 @@ export default {
               .bind(targetId)
               .first();
 
-            const now = Date.now();
-
             let status =
               `👤 وضعیت ${targetName}\n\n`;
 
@@ -369,16 +356,8 @@ export default {
               ? "⬇️ نصف امتیاز: فعال\n"
               : "⬆️ نصف امتیاز: خاموش\n";
 
-            if (
-              settings &&
-              settings.muted_until > now
-            ) {
-              const remaining = Math.ceil(
-                (settings.muted_until - now) / 60000
-              );
-
-              status +=
-                `🔇 Mute: ${remaining} دقیقه باقی مانده\n`;
+            if (settings && settings.muted_until === -1) {
+              status += "🔇 Mute: فعال تا /unmute\n";
             } else {
               status += "🔊 Mute: خاموش\n";
             }
@@ -461,31 +440,77 @@ export default {
         }
 
         // =========================
-        // BOMB — ONE TIME ONLY
+        // BOMB — ONCE PER DAY
         // =========================
 
         if (text === BOMB_WORD) {
-          const alreadyClaimed =
+          const now = Date.now();
+
+          const bombClaim =
             await env.DB.prepare(`
-              SELECT user_id
+              SELECT claimed_at
               FROM bomb_claims
               WHERE user_id = ?
             `)
               .bind(userId)
               .first();
 
-          if (alreadyClaimed) {
-            await sendMessage(
-              env.BOT_TOKEN,
-              chatId,
-              `💣 ${name}، بمب کیر را قبلاً استفاده کرده‌ای!\n` +
-              `این جایزه فقط یک‌بار قابل دریافت است.`
-            );
+          if (bombClaim) {
+            const elapsed =
+              now - bombClaim.claimed_at;
 
-            return new Response("OK");
+            if (elapsed < BOMB_COOLDOWN) {
+              const remaining =
+                BOMB_COOLDOWN - elapsed;
+
+              const hours = Math.floor(
+                remaining / (60 * 60 * 1000)
+              );
+
+              const minutes = Math.ceil(
+                (remaining % (60 * 60 * 1000)) / 60000
+              );
+
+              let waitText = "";
+
+              if (hours > 0) {
+                waitText += `${hours} ساعت`;
+              }
+
+              if (minutes > 0) {
+                if (waitText) {
+                  waitText += " و ";
+                }
+
+                waitText += `${minutes} دقیقه`;
+              }
+
+              await sendMessage(
+                env.BOT_TOKEN,
+                chatId,
+                `💣 ${name}، امروز بمب کیر را استفاده کرده‌ای!\n` +
+                `⏳ ${waitText} دیگر می‌توانی دوباره استفاده کنی.`
+              );
+
+              return new Response("OK");
+            }
+
+            await env.DB.prepare(`
+              UPDATE bomb_claims
+              SET claimed_at = ?
+              WHERE user_id = ?
+            `)
+              .bind(now, userId)
+              .run();
+          } else {
+            await env.DB.prepare(`
+              INSERT INTO bomb_claims
+              (user_id, claimed_at)
+              VALUES (?, ?)
+            `)
+              .bind(userId, now)
+              .run();
           }
-
-          const now = Date.now();
 
           const player = await env.DB.prepare(`
             SELECT user_id, name, score
@@ -504,7 +529,8 @@ export default {
               .bind(userId, name, 100, now)
               .run();
           } else {
-            const newScore = player.score + 100;
+            const newScore =
+              player.score + 100;
 
             await env.DB.prepare(`
               UPDATE scores
@@ -514,14 +540,6 @@ export default {
               .bind(name, newScore, now, userId)
               .run();
           }
-
-          await env.DB.prepare(`
-            INSERT INTO bomb_claims
-            (user_id, claimed_at)
-            VALUES (?, ?)
-          `)
-            .bind(userId, now)
-            .run();
 
           const updatedPlayer =
             await env.DB.prepare(`
@@ -535,8 +553,9 @@ export default {
           await sendMessage(
             env.BOT_TOKEN,
             chatId,
-            `💣 ${name}، ۱۰۰ امتیاز یکبار مصرف گرفتی!\n` +
-            `📊 امتیازات: ${updatedPlayer.score}`
+            `💣 ${name}، ۱۰۰ امتیاز گرفتی!\n` +
+            `📊 امتیازات: ${updatedPlayer.score}\n` +
+            `⏳ بمب کیر دوباره ۲۴ ساعت دیگر قابل استفاده است.`
           );
 
           return new Response("OK");
@@ -583,16 +602,12 @@ export default {
         // MUTE CHECK
         // =========================
 
-        if (mutedUntil > now) {
-          const remaining = Math.ceil(
-            (mutedUntil - now) / 60000
-          );
-
+        if (mutedUntil === -1) {
           await sendMessage(
             env.BOT_TOKEN,
             chatId,
             `🔇 ${name}، فعلاً امکان گرفتن امتیاز نداری.\n` +
-            `${remaining} دقیقه باقی مانده.`
+            `این میوت تا زمانی که ادمین /unmute نکند فعال است.`
           );
 
           return new Response("OK");
@@ -741,7 +756,6 @@ export default {
   }
 };
 
-
 // =========================
 // SEND MESSAGE
 // =========================
@@ -767,4 +781,4 @@ async function sendMessage(token, chatId, text) {
       await response.text()
     );
   }
-              }
+            }
