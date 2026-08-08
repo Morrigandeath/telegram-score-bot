@@ -1,4 +1,4 @@
-const SCORE_WORD = "کیر میخوام";
+const SCORE_WORD = "i want kir";
 const COOLDOWN = 120000; // 2 minutes
  
 export default {
