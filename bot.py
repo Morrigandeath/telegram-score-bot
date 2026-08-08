@@ -15,7 +15,7 @@ from telegram.ext import (
 TOKEN = "8889103466:AAHv8ti3civyOd8IhOSrM7Bd0lFaLtEa6Ro"
 
 # Change this whenever you want
-SCORE_WORD = "کیر میخوام"
+SCORE_WORD = "I want wood"
 
 # 2 minutes = 120 seconds
 COOLDOWN = 120
