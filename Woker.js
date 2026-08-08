@@ -1,5 +1,8 @@
-const SCORE_WORD = "کیر میخوام";
-const SCORE_WORD_5 = "کیر گنده میخوام";
+const SCORE_WORD = "کیر";
+const SCORE_WORD_5 = "کیر گنده";
+const BOMB_WORD = "بمب کیر";
+const MY_SCORE_WORD = "چقدر کیر دارم";
+const LEADERBOARD_WORD = "رتبه بندی خواهان کیر";
 
 const COOLDOWN = 120000; // 2 minutes
 
@@ -48,24 +51,72 @@ export default {
         const message = update.message;
         const text = message.text.trim();
         const chatId = message.chat.id;
+        const user = message.from;
+
+        if (!user) {
+          return new Response("OK");
+        }
+
+        const userId = String(user.id);
+        const name = user.first_name || "بازیکن";
 
         // /start
         if (text === "/start") {
           await sendMessage(
             env.BOT_TOKEN,
             chatId,
-            `👋 Welcome!\n\n` +
-            `"${SCORE_WORD}" → 1 point\n` +
-            `"${SCORE_WORD_5}" → 5 points\n\n` +
-            `⏳ هر دو دقیقه یکبار میتونی کیر بگیری.\n\n` +
-            `🏆 Use /leaderboard to see the top players.`
+            `👋 خوش آمدی ${name}!\n\n` +
+            `کیر → ۱ امتیاز\n` +
+            `کیر گنده → ۵ امتیاز\n` +
+            `بمب کیر → ۱۰۰ امتیاز (فقط یک‌بار)\n\n` +
+            `🏆 رتبه بندی خواهان کیر\n` +
+            `📊 چقدر کیر دارم`
           );
 
           return new Response("OK");
         }
 
-        // Leaderboard
-        if (text === "/رتبه کیر خواهان" || text === "/top") {
+        // Make sure bomb table exists
+        await env.DB.prepare(`
+          CREATE TABLE IF NOT EXISTS bomb_claims (
+            user_id TEXT PRIMARY KEY,
+            claimed_at INTEGER NOT NULL
+          )
+        `).run();
+
+        // =========================
+        // MY SCORE
+        // =========================
+
+        if (text === MY_SCORE_WORD) {
+          const player = await env.DB.prepare(`
+            SELECT score
+            FROM scores
+            WHERE user_id = ?
+          `)
+            .bind(userId)
+            .first();
+
+          const score = player ? player.score : 0;
+
+          await sendMessage(
+            env.BOT_TOKEN,
+            chatId,
+            `📊 امتیازات: ${score}`
+          );
+
+          return new Response("OK");
+        }
+
+        // =========================
+        // LEADERBOARD
+        // =========================
+
+        if (
+          text === LEADERBOARD_WORD ||
+          text === "/leaderboard" ||
+          text === "/top"
+        ) {
           const result = await env.DB.prepare(`
             SELECT name, score
             FROM scores
@@ -77,16 +128,17 @@ export default {
             await sendMessage(
               env.BOT_TOKEN,
               chatId,
-              "🏆 خواهان کیر نداریم."
+              "🏆 رتبه بندی خواهان کیر خالی است."
             );
 
             return new Response("OK");
           }
 
-          let leaderboard = "🏆 LEADERBOARD\n\n";
+          let leaderboard = "🏆 رتبه بندی خواهان کیر\n\n";
 
           result.results.forEach((player, index) => {
-            leaderboard += `${index + 1}. ${player.name} — ${player.score}\n`;
+            leaderboard +=
+              `${index + 1}. ${player.name} — ${player.score}\n`;
           });
 
           await sendMessage(
@@ -98,26 +150,102 @@ export default {
           return new Response("OK");
         }
 
-        // Determine points
+        // =========================
+        // BOMB — ONE TIME ONLY
+        // =========================
+
+        if (text === BOMB_WORD) {
+          const alreadyClaimed = await env.DB.prepare(`
+            SELECT user_id
+            FROM bomb_claims
+            WHERE user_id = ?
+          `)
+            .bind(userId)
+            .first();
+
+          if (alreadyClaimed) {
+            await sendMessage(
+              env.BOT_TOKEN,
+              chatId,
+              `💣 ${name}، بمب کیر را قبلاً استفاده کرده‌ای!\n` +
+              `این جایزه فقط یک‌بار قابل دریافت است.`
+            );
+
+            return new Response("OK");
+          }
+
+          const now = Date.now();
+
+          // Create player if needed
+          const player = await env.DB.prepare(`
+            SELECT user_id, name, score
+            FROM scores
+            WHERE user_id = ?
+          `)
+            .bind(userId)
+            .first();
+
+          if (!player) {
+            await env.DB.prepare(`
+              INSERT INTO scores
+              (user_id, name, score, last_score_at)
+              VALUES (?, ?, ?, ?)
+            `)
+              .bind(userId, name, 100, now)
+              .run();
+          } else {
+            const newScore = player.score + 100;
+
+            await env.DB.prepare(`
+              UPDATE scores
+              SET name = ?, score = ?, last_score_at = ?
+              WHERE user_id = ?
+            `)
+              .bind(name, newScore, now, userId)
+              .run();
+          }
+
+          // Mark bomb as used
+          await env.DB.prepare(`
+            INSERT INTO bomb_claims
+            (user_id, claimed_at)
+            VALUES (?, ?)
+          `)
+            .bind(userId, now)
+            .run();
+
+          const updatedPlayer = await env.DB.prepare(`
+            SELECT score
+            FROM scores
+            WHERE user_id = ?
+          `)
+            .bind(userId)
+            .first();
+
+          await sendMessage(
+            env.BOT_TOKEN,
+            chatId,
+            `💣 ${name}، ۱۰۰ امتیاز یکبار مصرف گرفتی!\n` +
+            `📊 امتیازات: ${updatedPlayer.score}`
+          );
+
+          return new Response("OK");
+        }
+
+        // =========================
+        // NORMAL SCORE WORDS
+        // =========================
+
         let points = 0;
 
-        if (text === SCORE_WORD) {
-          points = 1;
-        } else if (text === SCORE_WORD_5) {
+        if (text === SCORE_WORD_5) {
           points = 5;
+        } else if (text === SCORE_WORD) {
+          points = 1;
         } else {
           return new Response("OK");
         }
 
-        // Telegram user
-        const user = message.from;
-
-        if (!user) {
-          return new Response("OK");
-        }
-
-        const userId = String(user.id);
-        const name = user.first_name || "Player";
         const now = Date.now();
 
         // Get player
@@ -129,30 +257,53 @@ export default {
           .bind(userId)
           .first();
 
-        // Check cooldown
+        // =========================
+        // COOLDOWN
+        // =========================
+
         if (player) {
           const elapsed = now - player.last_score_at;
 
           if (elapsed < COOLDOWN) {
             const remaining = COOLDOWN - elapsed;
 
-            const minutes = Math.floor(remaining / 60000);
+            const minutes = Math.floor(
+              remaining / 60000
+            );
+
             const seconds = Math.ceil(
               (remaining % 60000) / 1000
             );
 
+            let waitText = "";
+
+            if (minutes > 0) {
+              waitText += `${minutes} دقیقه`;
+            }
+
+            if (seconds > 0) {
+              if (waitText) {
+                waitText += " و ";
+              }
+
+              waitText += `${seconds} ثانیه`;
+            }
+
             await sendMessage(
               env.BOT_TOKEN,
               chatId,
-              `⏳ ${name}, صبر کن  ` +
-              `${minutes}m ${seconds}s before scoring again.`
+              `⏳ ${name}، فعلاً کیر در کار نیست!\n` +
+              `باید ${waitText} صبر کنی.`
             );
 
             return new Response("OK");
           }
         }
 
-        // New player
+        // =========================
+        // NEW PLAYER
+        // =========================
+
         if (!player) {
           await env.DB.prepare(`
             INSERT INTO scores
@@ -165,14 +316,17 @@ export default {
           await sendMessage(
             env.BOT_TOKEN,
             chatId,
-            `✅ ${name} got ${points} point${points === 1 ? "" : "s"}!\n` +
-            `🏆 امتیازت: ${points}`
+            `✅ ${points} امتیاز گرفتی!\n` +
+            `📊 امتیازات: ${points}`
           );
 
           return new Response("OK");
         }
 
-        // Existing player
+        // =========================
+        // EXISTING PLAYER
+        // =========================
+
         const newScore = player.score + points;
 
         await env.DB.prepare(`
@@ -186,8 +340,8 @@ export default {
         await sendMessage(
           env.BOT_TOKEN,
           chatId,
-          `✅ ${name} got ${points} point${points === 1 ? "" : "s"}!\n` +
-          `🏆 امتیازت: ${newScore}`
+          `✅ ${points} امتیاز گرفتی!\n` +
+          `📊 امتیازات: ${newScore}`
         );
 
         return new Response("OK");
@@ -235,4 +389,4 @@ async function sendMessage(token, chatId, text) {
       await response.text()
     );
   }
-}
+          }
