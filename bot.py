@@ -1,198 +1,229 @@
+import os
 import time
+import sqlite3
 
 from telegram import Update
 from telegram.ext import (
-Application,
-MessageHandler,
-ContextTypes,
-filters,
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
 
-=========================
+# =========================
+# BOT SETTINGS
+# =========================
 
-BOT SETTINGS
-
-=========================
-
-TOKEN = "YOUR_BOT_TOKEN_HERE"
-
-Change this whenever you want
+TOKEN = os.environ.get("BOT_TOKEN", "")
 
 SCORE_WORD = "I want wood"
+COOLDOWN = 120  # 2 minutes
 
-2 minutes = 120 seconds
+DATABASE = "scores.db"
 
-COOLDOWN = 120
 
-=========================
+# =========================
+# DATABASE
+# =========================
 
-DATA
+def init_database():
+    conn = sqlite3.connect(DATABASE)
 
-=========================
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scores (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            score INTEGER NOT NULL DEFAULT 0,
+            last_score_at REAL NOT NULL DEFAULT 0
+        )
+    """)
 
-scores = {}
-last_score_time = {}
+    conn.commit()
+    conn.close()
 
-=========================
 
-MESSAGE HANDLER
+def get_player(user_id):
+    conn = sqlite3.connect(DATABASE)
 
-=========================
+    row = conn.execute("""
+        SELECT user_id, name, score, last_score_at
+        FROM scores
+        WHERE user_id = ?
+    """, (user_id,)).fetchone()
+
+    conn.close()
+    return row
+
+
+def add_point(user_id, name):
+    conn = sqlite3.connect(DATABASE)
+
+    row = conn.execute("""
+        SELECT score
+        FROM scores
+        WHERE user_id = ?
+    """, (user_id,)).fetchone()
+
+    now = time.time()
+
+    if row is None:
+        score = 1
+
+        conn.execute("""
+            INSERT INTO scores
+            (user_id, name, score, last_score_at)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, name, score, now))
+
+    else:
+        score = row[0] + 1
+
+        conn.execute("""
+            UPDATE scores
+            SET name = ?, score = ?, last_score_at = ?
+            WHERE user_id = ?
+        """, (name, score, now, user_id))
+
+    conn.commit()
+    conn.close()
+
+    return score
+
+
+# =========================
+# SCORE MESSAGE
+# =========================
 
 async def handle_message(
-update: Update,
-context: ContextTypes.DEFAULT_TYPE
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
 ):
-if not update.message or not update.message.text:
-return
+    if not update.message or not update.message.text:
+        return
 
-text = update.message.text.strip()  
+    text = update.message.text.strip()
 
-# Ignore messages that are not the score word  
-if text != SCORE_WORD:  
-    return  
+    if text != SCORE_WORD:
+        return
 
-user = update.effective_user  
-user_id = user.id  
-now = time.time()  
+    user = update.effective_user
 
-# Check the 2-minute cooldown  
-if user_id in last_score_time:  
+    if not user:
+        return
 
-    elapsed = now - last_score_time[user_id]  
+    user_id = user.id
+    name = user.first_name or "Player"
 
-    if elapsed < COOLDOWN:  
+    now = time.time()
+    player = get_player(user_id)
 
-        remaining = int(COOLDOWN - elapsed)  
+    # 2-minute cooldown
+    if player:
+        last_score_at = player[3]
+        elapsed = now - last_score_at
 
-        minutes = remaining // 60  
-        seconds = remaining % 60  
+        if elapsed < COOLDOWN:
+            remaining = int(COOLDOWN - elapsed)
 
-        await update.message.reply_text(  
-            f"⏳ {user.first_name}, "  
-            f"you need to wait "  
-            f"{minutes}m {seconds}s "  
-            f"before getting another point."  
-        )  
+            minutes = remaining // 60
+            seconds = remaining % 60
 
-        return  
+            await update.message.reply_text(
+                f"⏳ {name}, you need to wait "
+                f"{minutes}m {seconds}s "
+                f"before getting another point."
+            )
 
-# Give the user one point  
-scores[user_id] = scores.get(user_id, 0) + 1  
+            return
 
-last_score_time[user_id] = now  
+    score = add_point(user_id, name)
 
-await update.message.reply_text(  
-    f"✅ {user.first_name} got 1 point!\n"  
-    f"🏆 Your score: {scores[user_id]}"  
-)
+    await update.message.reply_text(
+        f"✅ {name} got 1 point!\n"
+        f"🏆 Your score: {score}"
+    )
 
-=========================
 
-START BOT
+# =========================
+# LEADERBOARD
+# =========================
 
-=========================
+async def leaderboard(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    conn = sqlite3.connect(DATABASE)
+
+    players = conn.execute("""
+        SELECT name, score
+        FROM scores
+        ORDER BY score DESC, name ASC
+        LIMIT 10
+    """).fetchall()
+
+    conn.close()
+
+    if not players:
+        await update.message.reply_text(
+            "🏆 The leaderboard is empty."
+        )
+        return
+
+    text = "🏆 LEADERBOARD\n\n"
+
+    for index, (name, score) in enumerate(players, start=1):
+        text += f"{index}. {name} — {score}\n"
+
+    await update.message.reply_text(text)
+
+
+# =========================
+# START
+# =========================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    await update.message.reply_text(
+        "👋 Welcome!\n\n"
+        f"Send `{SCORE_WORD}` to get a point.\n"
+        "⏳ You can get one point every 2 minutes.\n\n"
+        "🏆 Use /leaderboard to see the top players."
+    )
+
+
+# =========================
+# MAIN
+# =========================
 
 def main():
+    if not TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN environment variable is missing."
+        )
 
-app = Application.builder().token(TOKEN).build()  
+    init_database()
 
-app.add_handler(  
-    MessageHandler(  
-        filters.TEXT & ~filters.COMMAND,  
-        handle_message  
-    )  
-)  
+    app = Application.builder().token(TOKEN).build()
 
-print("Bot is running...")  
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("top", leaderboard))
 
-app.run_polling()
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_message
+        )
+    )
 
-if name == "main":
-main()
+    print("Bot is running...")
 
-    const userId = String(user.id);  
-    const name = user.first_name || "Player";  
-    const now = Date.now();  
+    app.run_polling()
 
-    // Get player  
-    const player = await env.DB.prepare(  
-      SELECT score, last_score_at  
-      FROM scores  
-      WHERE user_id = ?  
-    )  
-      .bind(userId)  
-      .first();  
 
-    // Cooldown  
-    if (player && now - player.last_score_at < COOLDOWN) {  
-      const remaining = COOLDOWN - (now - player.last_score_at);  
-
-      const minutes = Math.floor(remaining / 60000);  
-      const seconds = Math.ceil((remaining % 60000) / 1000);  
-
-      await sendMessage(  
-        env.BOT_TOKEN,  
-        message.chat.id,  
-        ⏳ ${name}, wait ${minutes}m ${seconds}s before getting another point.  
-      );  
-
-      return new Response("OK");  
-    }  
-
-    // New player  
-    if (!player) {  
-      await env.DB.prepare(  
-        INSERT INTO scores (user_id, name, score, last_score_at)  
-        VALUES (?, ?, 1, ?)  
-      )  
-        .bind(userId, name, now)  
-        .run();  
-
-      await sendMessage(  
-        env.BOT_TOKEN,  
-        message.chat.id,  
-        ✅ ${name} got 1 point!\n🏆 Your score: 1  
-      );  
-    }  
-
-    // Existing player  
-    else {  
-      const newScore = player.score + 1;  
-
-      await env.DB.prepare(  
-        UPDATE scores  
-        SET name = ?, score = ?, last_score_at = ?  
-        WHERE user_id = ?  
-      )  
-        .bind(name, newScore, now, userId)  
-        .run();  
-
-      await sendMessage(  
-        env.BOT_TOKEN,  
-        message.chat.id,  
-        ✅ ${name} got 1 point!\n🏆 Your score: ${newScore}  
-      );  
-    }  
-
-    return new Response("OK");  
-  }  
-
-  return new Response("Not found", { status: 404 });  
-
-} catch (error) {  
-  console.error("Webhook error:", error);  
-
-  return new Response(  
-    "ERROR: " + String(error),  
-    {  
-      status: 500,  
-      headers: {  
-        "Content-Type": "text/plain"  
-      }  
-    }  
-  );  
-}
-
-}
-};
+if __name__ == "__main__":
+    main()
+    
