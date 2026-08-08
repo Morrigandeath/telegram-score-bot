@@ -12,10 +12,10 @@ from telegram.ext import (
 # BOT SETTINGS
 # =========================
 
-TOKEN = "YOUR_BOT_TOKEN_HERE"
+TOKEN = "8889103466:AAHv8ti3civyOd8IhOSrM7Bd0lFaLtEa6Ro"
 
 # Change this whenever you want
-SCORE_WORD = "I want wood"
+SCORE_WORD = "کیر میخوام"
 
 # 2 minutes = 120 seconds
 COOLDOWN = 120
